@@ -141,6 +141,7 @@ class PronoteReadSwitch(CoordinatorEntity, SwitchEntity):
         super().__init__(coordinator)
         self._attr_unique_id = unique_id
         self._attr_name = name
+        self._known_item = None
         self._attr_device_info = DeviceInfo(
             name=f"Pronote - {coordinator.data['child_info'].name}",
             identifiers={(DOMAIN, coordinator.data["child_info"].name)},
@@ -149,9 +150,32 @@ class PronoteReadSwitch(CoordinatorEntity, SwitchEntity):
         )
 
     @property
-    def _item(self):
-        """The item this switch stands for, or None once it is gone."""
+    def _items(self):
+        """The list this switch's item belongs to, or None when unreadable."""
         raise NotImplementedError
+
+    def _matches(self, item) -> bool:
+        """Whether ``item`` is the one this switch stands for."""
+        raise NotImplementedError
+
+    @property
+    def _item(self):
+        """The item this switch stands for, or None once it is gone.
+
+        A fetch that fails leaves the list at None, which must not be read as
+        "the item is gone": marking an item goes through a full refresh, and a
+        single refused mark is enough to make PRONOTE reopen a session and fail
+        the rest of the cycle. Falling back to the last known item keeps the
+        entity — and every card built on it — alive across such a hiccup.
+        """
+        items = self._items
+        if items is None:
+            return self._known_item
+        for item in items:
+            if self._matches(item):
+                self._known_item = item
+                return item
+        return None
 
     @property
     def available(self) -> bool:
@@ -169,11 +193,11 @@ class PronoteDiscussionSwitch(PronoteReadSwitch):
         self._subject = discussion["subject"]
 
     @property
-    def _item(self):
-        for discussion in self.coordinator.data.get("discussions") or []:
-            if discussion_key(discussion) == self._key:
-                return discussion
-        return None
+    def _items(self):
+        return self.coordinator.data.get("discussions")
+
+    def _matches(self, discussion) -> bool:
+        return discussion_key(discussion) == self._key
 
     @property
     def is_on(self) -> bool | None:
@@ -216,11 +240,11 @@ class PronoteInformationSwitch(PronoteReadSwitch):
         self._id = information["id"]
 
     @property
-    def _item(self):
-        for information in self.coordinator.data.get("information_and_surveys") or []:
-            if information["id"] == self._id:
-                return information
-        return None
+    def _items(self):
+        return self.coordinator.data.get("information_and_surveys")
+
+    def _matches(self, information) -> bool:
+        return information["id"] == self._id
 
     @property
     def is_on(self) -> bool | None:
