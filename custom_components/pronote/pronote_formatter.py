@@ -221,6 +221,23 @@ def format_menu(menu) -> dict:
     }
 
 
+def information_content(information_and_survey):
+    """Content of an information, or None when PRONOTE provides none.
+
+    ``Information.content`` reads the text of the first question of the item,
+    which attachment-only news and some surveys simply do not have.
+    """
+    try:
+        return information_and_survey.content
+    except Exception as ex:
+        _LOGGER.debug(
+            "No readable content for information (%s): %s",
+            information_and_survey.title,
+            ex,
+        )
+        return None
+
+
 def format_information_and_survey(information_and_survey) -> dict:
     return {
         "id": information_and_survey.id,
@@ -236,7 +253,7 @@ def format_information_and_survey(information_and_survey) -> dict:
         "attachments": format_attachment_list(information_and_survey.attachments),
         "template": information_and_survey.template,
         "shared_template": information_and_survey.shared_template,
-        "content": information_and_survey.content,
+        "content": information_content(information_and_survey),
     }
 
 
