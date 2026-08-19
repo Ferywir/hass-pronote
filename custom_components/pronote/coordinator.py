@@ -136,7 +136,7 @@ def get_information_and_surveys(client, date_from, pending_marks=None):
     try:
         informations = client.information_and_surveys(date_from)
     except Exception as ex:
-        _LOGGER.info("Error getting information_and_surveys from pronote: %s", ex)
+        _LOGGER.warning("Error getting information_and_surveys from pronote: %s", ex)
         return None
 
     if pending_marks and apply_information_marks(informations, pending_marks):
@@ -146,12 +146,20 @@ def get_information_and_surveys(client, date_from, pending_marks=None):
             _LOGGER.info("Error getting information_and_surveys from pronote: %s", ex)
             return None
 
-    return [
-        format_information_and_survey(information)
-        for information in sorted(
+    # Formatting is guarded item by item: PRONOTE mixes plain news, surveys and
+    # attachment-only items in the same list, and one unreadable item must not
+    # cost the whole refresh.
+    formatted = []
+    for information in sorted(
             informations, key=lambda i: i.creation_date, reverse=True
-        )
-    ]
+    ):
+        try:
+            formatted.append(format_information_and_survey(information))
+        except Exception as ex:
+            _LOGGER.warning(
+                "Skipping unreadable information (%s): %s", information.id, ex
+            )
+    return formatted
 
 
 def get_discussion_messages(discussion):
