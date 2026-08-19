@@ -118,12 +118,17 @@ def apply_information_marks(informations, pending_marks):
             information.mark_as_read(read)
             marked = True
         except Exception as ex:
+            # pronotepy answers an API error by reopening a whole session and
+            # retrying, which costs the rest of the cycle. One refused mark is
+            # therefore reason enough to drop the remaining ones.
             _LOGGER.warning(
-                "Error marking information (%s) as %s: %s",
+                "Error marking information (%s) as %s, skipping the remaining "
+                "marks: %s",
                 information.title,
                 "read" if read else "unread",
                 ex,
             )
+            break
     return marked
 
 
