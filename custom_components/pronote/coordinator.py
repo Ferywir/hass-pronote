@@ -106,7 +106,44 @@ def get_overall_average(period):
         return None
 
 
-def apply_information_marks(informations, pending_marks):
+def mark_information_read(client, information, read):
+    """Mark an information read or unread in PRONOTE.
+
+    ``Information.mark_as_read`` names the reader with ``client.info.id``,
+    which a parent account fills with the parent's own resource — while the
+    same payload labels it ``G: 4``, a student. PRONOTE answers "la page a
+    expire" and pronotepy reopens a session over it (pronotepy#180, open
+    since 2022). Posting the selected child instead keeps the payload
+    consistent, and falls back to ``client.info`` for student accounts,
+    where the two are the same resource.
+    """
+    resource = getattr(client, "_selected_child", None) or client.info
+    _LOGGER.debug(
+        "Marking information %s as %s for resource %s",
+        information.id,
+        "read" if read else "unread",
+        resource.id,
+    )
+    client.post(
+        "SaisieActualites",
+        8,
+        {
+            "listeActualites": [
+                {
+                    "N": information.id,
+                    "validationDirecte": True,
+                    "genrePublic": 4,
+                    "public": {"N": resource.id, "G": 4},
+                    "lue": read,
+                }
+            ],
+            "saisieActualite": False,
+        },
+    )
+    information.read = read
+
+
+def apply_information_marks(client, informations, pending_marks):
     """Mark informations as read/unread. Returns True if anything was marked."""
     marked = False
     by_id = {information.id: information for information in informations}
@@ -115,7 +152,7 @@ def apply_information_marks(informations, pending_marks):
         if information is None:
             continue
         try:
-            information.mark_as_read(read)
+            mark_information_read(client, information, read)
             marked = True
         except Exception as ex:
             # pronotepy answers an API error by reopening a whole session and
@@ -144,7 +181,9 @@ def get_information_and_surveys(client, date_from, pending_marks=None):
         _LOGGER.warning("Error getting information_and_surveys from pronote: %s", ex)
         return None
 
-    if pending_marks and apply_information_marks(informations, pending_marks):
+    if pending_marks and apply_information_marks(
+            client, informations, pending_marks
+    ):
         try:
             informations = client.information_and_surveys(date_from)
         except Exception as ex:
