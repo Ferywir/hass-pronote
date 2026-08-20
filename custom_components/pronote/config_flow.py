@@ -50,6 +50,7 @@ from pronotepy.ent import *
 
 from .const import (
     DEFAULT_DISCUSSIONS_ENABLED,
+    DEFAULT_INFORMATION_DAYS,
     DOMAIN,
     DEFAULT_REFRESH_INTERVAL,
     DEFAULT_ALARM_OFFSET,
@@ -314,6 +315,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             "alarm_offset", DEFAULT_ALARM_OFFSET
                         ),
                     ): int,
+                    vol.Optional(
+                        "information_days",
+                        default=config_entry.options.get(
+                            "information_days", DEFAULT_INFORMATION_DAYS
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=365)),
                     vol.Optional(
                         "discussions",
                         default=config_entry.options.get(

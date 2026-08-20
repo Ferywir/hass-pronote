@@ -30,6 +30,7 @@ from .const import (
     DEFAULT_REFRESH_INTERVAL,
     DEFAULT_ALARM_OFFSET,
     DEFAULT_DISCUSSIONS_ENABLED,
+    DEFAULT_INFORMATION_DAYS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -127,22 +128,21 @@ def mark_information_read(client, information, read):
     where the two are the same resource.
     """
     resource = mark_resource(client)
-    client.post(
-        "SaisieActualites",
-        8,
-        {
-            "listeActualites": [
-                {
-                    "N": information.id,
-                    "validationDirecte": True,
-                    "genrePublic": 4,
-                    "public": {"N": resource.id, "G": 4},
-                    "lue": read,
-                }
-            ],
-            "saisieActualite": False,
-        },
-    )
+    payload = {
+        "listeActualites": [
+            {
+                "N": information.id,
+                "validationDirecte": True,
+                "genrePublic": 4,
+                "public": {"N": resource.id, "G": 4},
+                "lue": read,
+            }
+        ],
+        "saisieActualite": False,
+    }
+    _LOGGER.debug("SaisieActualites request: %s", payload)
+    response = client.post("SaisieActualites", 8, payload)
+    _LOGGER.debug("SaisieActualites answer: %s", response)
     information.read = read
 
 
@@ -158,6 +158,13 @@ def apply_information_marks(client, informations, pending_marks):
         information_key(information.title, information.creation_date): information
         for information in informations
     }
+    _LOGGER.debug(
+        "Applying %d pending mark(s) among %d information(s): pending=%s known=%s",
+        len(pending_marks),
+        len(by_key),
+        [key for key, _ in pending_marks],
+        sorted(by_key),
+    )
     for key, read in pending_marks:
         information = by_key.get(key)
         if information is None:
@@ -208,6 +215,13 @@ def get_information_and_surveys(client, date_from, pending_marks=None):
         except Exception as ex:
             _LOGGER.info("Error getting information_and_surveys from pronote: %s", ex)
             return None
+        _LOGGER.debug(
+            "Read state after marking: %s",
+            {
+                information_key(i.title, i.creation_date): i.read
+                for i in informations
+            },
+        )
 
     # Formatting is guarded item by item: PRONOTE mixes plain news, surveys and
     # attachment-only items in the same list, and one unreadable item must not
@@ -334,6 +348,11 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
 
     async def async_mark_information(self, information_key, read=True):
         """Queue a read/unread mark and refresh, applying it with a live client."""
+        _LOGGER.debug(
+            "Queueing mark of %s as %s",
+            information_key,
+            "read" if read else "unread",
+        )
         self.pending_information_marks.append((information_key, read))
         await self.async_refresh()
 
@@ -555,8 +574,11 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
             _LOGGER.info("Error getting homework_period from pronote: %s", ex)
 
         # Information and Surveys
+        information_days = self.config_entry.options.get(
+            "information_days", DEFAULT_INFORMATION_DAYS
+        )
         date_from = datetime.combine(
-            today - timedelta(days=INFO_SURVEY_LIMIT_MAX_DAYS), datetime.min.time()
+            today - timedelta(days=information_days), datetime.min.time()
         )
         information_marks = self.pending_information_marks
         self.pending_information_marks = []
