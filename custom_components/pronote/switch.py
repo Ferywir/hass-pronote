@@ -73,6 +73,16 @@ async def async_setup_entry(
         removal pass, the entity registry would slowly fill up with switches
         pointing at threads and news that no longer exist.
         """
+        # A refresh that fails midway leaves the data half written: the
+        # coordinator empties every list at the start of a cycle and fills them
+        # back in one by one, so a failure reads as "everything is gone" and
+        # would delete every switch of the entry — for good, a registry removal
+        # being nothing like an entity turning unavailable. The child is not
+        # known at that point either, which would give the switches added in
+        # the same pass a unique id built on a missing prefix.
+        if not coordinator.last_update_success:
+            return
+
         discussions_enabled = config_entry.options.get(
             "discussions", DEFAULT_DISCUSSIONS_ENABLED
         )
@@ -103,9 +113,9 @@ async def async_setup_entry(
             added_ids.update(entity.unique_id for entity in added)
             async_add_entities(added)
 
-        # A failed refresh leaves the data at None, which must not be read as
-        # "everything is gone", or a transient error would delete entities.
-        # Disabling discussions, on the other hand, is meant to remove them.
+        # A family whose fetch failed is left at None, which must not be read
+        # as "everything is gone" either. Disabling discussions, on the other
+        # hand, is meant to remove them.
         removable = []
         if not discussions_enabled or discussions is not None:
             removable.append(DISCUSSION_MARKER)

@@ -106,6 +106,15 @@ def get_overall_average(period):
         return None
 
 
+def mark_resource(client):
+    """The resource a read mark applies to: the selected child, or the account.
+
+    A parent account keeps the parent in ``client.info`` even once a child is
+    selected, so it cannot be used to name the reader of an information.
+    """
+    return getattr(client, "_selected_child", None) or client.info
+
+
 def mark_information_read(client, information, read):
     """Mark an information read or unread in PRONOTE.
 
@@ -117,13 +126,7 @@ def mark_information_read(client, information, read):
     consistent, and falls back to ``client.info`` for student accounts,
     where the two are the same resource.
     """
-    resource = getattr(client, "_selected_child", None) or client.info
-    _LOGGER.debug(
-        "Marking information %s as %s for resource %s",
-        information.id,
-        "read" if read else "unread",
-        resource.id,
-    )
+    resource = mark_resource(client)
     client.post(
         "SaisieActualites",
         8,
@@ -159,10 +162,13 @@ def apply_information_marks(client, informations, pending_marks):
             # retrying, which costs the rest of the cycle. One refused mark is
             # therefore reason enough to drop the remaining ones.
             _LOGGER.warning(
-                "Error marking information (%s) as %s, skipping the remaining "
-                "marks: %s",
+                "Error marking information %s (%s) as %s for resource %s, "
+                "skipping the remaining marks: %s: %s",
+                information.id,
                 information.title,
                 "read" if read else "unread",
+                mark_resource(client).id,
+                type(ex).__name__,
                 ex,
             )
             break
