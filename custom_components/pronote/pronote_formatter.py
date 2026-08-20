@@ -221,6 +221,18 @@ def format_menu(menu) -> dict:
     }
 
 
+def information_key(title, creation_date) -> str:
+    """Stable key for an information.
+
+    PRONOTE hands out a fresh id for the same information on every session,
+    and the integration opens one per refresh, so ``Information.id`` cannot
+    name an information across two cycles — it is only good for the request
+    made within the session that returned it. Title and creation date can.
+    """
+    stamp = creation_date.isoformat() if creation_date is not None else ""
+    return slugify(f"{title or 'sans titre'} {stamp}", separator="_")
+
+
 def information_content(information_and_survey):
     """Content of an information, or None when PRONOTE provides none.
 
@@ -240,7 +252,9 @@ def information_content(information_and_survey):
 
 def format_information_and_survey(information_and_survey) -> dict:
     return {
-        "id": information_and_survey.id,
+        "key": information_key(
+            information_and_survey.title, information_and_survey.creation_date
+        ),
         "author": information_and_survey.author,
         "title": information_and_survey.title,
         "read": information_and_survey.read,

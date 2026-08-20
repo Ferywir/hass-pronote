@@ -41,7 +41,7 @@ def discussion_unique_id(coordinator, discussion) -> str:
 def information_unique_id(coordinator, information) -> str:
     return (
         f"{DOMAIN}_{coordinator.data['sensor_prefix']}"
-        f"{INFORMATION_MARKER}{ha_slugify(information['id'])}"
+        f"{INFORMATION_MARKER}{information['key']}"
     )
 
 
@@ -102,17 +102,6 @@ async def async_setup_entry(
                 information,
             )
 
-        added = [
-            PronoteDiscussionSwitch(coordinator, item, unique_id)
-            if kind == "discussion"
-            else PronoteInformationSwitch(coordinator, item, unique_id)
-            for unique_id, (kind, item) in current.items()
-            if unique_id not in added_ids
-        ]
-        if added:
-            added_ids.update(entity.unique_id for entity in added)
-            async_add_entities(added)
-
         # A family whose fetch failed is left at None, which must not be read
         # as "everything is gone" either. Disabling discussions, on the other
         # hand, is meant to remove them.
@@ -132,6 +121,19 @@ async def async_setup_entry(
             _LOGGER.debug("Removing switch of gone item: %s", entry.entity_id)
             registry.async_remove(entry.entity_id)
             added_ids.discard(entry.unique_id)
+
+        # Adding after the removal pass, so that a switch replacing a gone one
+        # takes over its entity id rather than being given a suffixed variant.
+        added = [
+            PronoteDiscussionSwitch(coordinator, item, unique_id)
+            if kind == "discussion"
+            else PronoteInformationSwitch(coordinator, item, unique_id)
+            for unique_id, (kind, item) in current.items()
+            if unique_id not in added_ids
+        ]
+        if added:
+            added_ids.update(entity.unique_id for entity in added)
+            async_add_entities(added)
 
     sync_switches()
     config_entry.async_on_unload(coordinator.async_add_listener(sync_switches))
@@ -247,14 +249,14 @@ class PronoteInformationSwitch(PronoteReadSwitch):
         super().__init__(
             coordinator, unique_id, information["title"] or "(sans titre)"
         )
-        self._id = information["id"]
+        self._key = information["key"]
 
     @property
     def _items(self):
         return self.coordinator.data.get("information_and_surveys")
 
     def _matches(self, information) -> bool:
-        return information["id"] == self._id
+        return information["key"] == self._key
 
     @property
     def is_on(self) -> bool | None:
@@ -286,8 +288,8 @@ class PronoteInformationSwitch(PronoteReadSwitch):
 
     async def async_turn_on(self, **kwargs) -> None:
         """Mark the information as read in PRONOTE."""
-        await self.coordinator.async_mark_information(self._id, read=True)
+        await self.coordinator.async_mark_information(self._key, read=True)
 
     async def async_turn_off(self, **kwargs) -> None:
         """Mark the information as unread in PRONOTE."""
-        await self.coordinator.async_mark_information(self._id, read=False)
+        await self.coordinator.async_mark_information(self._key, read=False)
