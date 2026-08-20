@@ -15,6 +15,10 @@ GRADES_TO_DISPLAY = 11
 EVALUATIONS_TO_DISPLAY = 15
 
 INFO_SURVEY_LIMIT_MAX_DAYS = 7
+# How far back informations and surveys are fetched. PRONOTE filters them on
+# their start date, so a short window silently drops items that are still on
+# the news page. Kept at the historical 7 days by default.
+DEFAULT_INFORMATION_DAYS = INFO_SURVEY_LIMIT_MAX_DAYS
 
 HOMEWORK_DESC_MAX_LENGTH = 125
 
