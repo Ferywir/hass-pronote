@@ -109,119 +109,13 @@ def get_overall_average(period):
         return None
 
 
-def mark_resource(client):
-    """The resource a read mark applies to.
-
-    The news page belongs to the account rather than to a child — a parent
-    sees one feed, addressed to them, whichever child is selected — so the
-    reader is the account itself. ``client.info`` holds it: a parent account
-    fills it at login and ``set_child`` leaves it alone.
-    """
-    return client.info
-
-
-def mark_information_read(client, information, read):
-    """Mark an information read or unread in PRONOTE.
-
-    The request goes straight to the transport rather than through
-    ``client.post``: ``ParentClient.post`` answers any API error by reopening
-    a session, without the ``_refreshing`` guard its base class has. That
-    consumes the rotating QR token, and since the integration only persists a
-    new one after a successful cycle — which the same error prevents — the
-    entry is left holding a spent token and can no longer log in at all. A
-    refused mark must cost nothing but the mark.
-
-    PRONOTE answers "la page a expiré" to the signature pronotepy sends
-    (pronotepy#180). The news page belongs to the account, so it is tried
-    without the child scoping first, then with it.
-    """
-    payload = {
-        "listeActualites": [
-            {
-                "N": information.id,
-                "validationDirecte": True,
-                "genrePublic": 4,
-                "public": {"N": client.info.id, "G": 4},
-                "lue": read,
-            }
-        ],
-        "saisieActualite": False,
-    }
-
-    signatures = [{"onglet": 8}]
-    child = getattr(client, "_selected_child", None)
-    if child is not None:
-        signatures.append({"onglet": 8, "membre": {"N": child.id, "G": 4}})
-
-    last_error = None
-    for signature in signatures:
-        _LOGGER.debug("SaisieActualites request %s: %s", signature, payload)
-        try:
-            response = client.communication.post(
-                "SaisieActualites", {"Signature": signature, "data": payload}
-            )
-        except Exception as ex:
-            _LOGGER.debug("SaisieActualites refused (%s): %s", signature, ex)
-            last_error = ex
-            continue
-        _LOGGER.debug("SaisieActualites answer: %s", response)
-        information.read = read
-        return
-
-    raise last_error
-
-
-def apply_information_marks(client, informations, pending_marks):
-    """Mark informations as read/unread. Returns True if anything was marked.
-
-    Marks are keyed the way discussions are, on content rather than on
-    ``Information.id``: the id belongs to the session that returned it, and
-    the mark is applied by the next refresh, which opens another one.
-    """
-    marked = False
-    by_key = {
-        information_key(information.title, information.creation_date): information
-        for information in informations
-    }
-    _LOGGER.debug(
-        "Applying %d pending mark(s) among %d information(s): pending=%s known=%s",
-        len(pending_marks),
-        len(by_key),
-        [key for key, _ in pending_marks],
-        sorted(by_key),
-    )
-    for key, read in pending_marks:
-        information = by_key.get(key)
-        if information is None:
-            _LOGGER.warning(
-                "Cannot mark %s as %s: no such information in this refresh",
-                key,
-                "read" if read else "unread",
-            )
-            continue
-        try:
-            mark_information_read(client, information, read)
-            marked = True
-        except Exception as ex:
-            # pronotepy answers an API error by reopening a whole session and
-            # retrying, which costs the rest of the cycle. One refused mark is
-            # therefore reason enough to drop the remaining ones.
-            _LOGGER.warning(
-                "Error marking information %s (%s) as %s for resource %s, "
-                "skipping the remaining marks: %s: %s",
-                key,
-                information.title,
-                "read" if read else "unread",
-                mark_resource(client).id,
-                type(ex).__name__,
-                ex,
-            )
-            break
-    return marked
-
-
-def get_information_and_surveys(client, date_from, pending_marks=None):
+def get_information_and_surveys(client, date_from):
     """Fetch informations and surveys, and format them.
+
+    Read only: PRONOTE refuses SaisieActualites for a parent account, with
+    "acces refuse" unscoped and "la page a expire" scoped to a child, and the
+    refusal poisons the session for the rest of the cycle. Informations can be
+    shown, not marked (pronotepy#180).
 
     Formatting happens here because pronotepy resolves the content lazily
     through a live client, which is torn down at the end of the refresh.
@@ -231,22 +125,6 @@ def get_information_and_surveys(client, date_from, pending_marks=None):
     except Exception as ex:
         _LOGGER.warning("Error getting information_and_surveys from pronote: %s", ex)
         return None
-
-    if pending_marks and apply_information_marks(
-            client, informations, pending_marks
-    ):
-        try:
-            informations = client.information_and_surveys(date_from)
-        except Exception as ex:
-            _LOGGER.info("Error getting information_and_surveys from pronote: %s", ex)
-            return None
-        _LOGGER.debug(
-            "Read state after marking: %s",
-            {
-                information_key(i.title, i.creation_date): i.read
-                for i in informations
-            },
-        )
 
     # Formatting is guarded item by item: PRONOTE mixes plain news, surveys and
     # attachment-only items in the same list, and one unreadable item must not
@@ -390,17 +268,6 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
         )
         self.config_entry = entry
         self.pending_discussion_marks = []
-        self.pending_information_marks = []
-
-    async def async_mark_information(self, information_key, read=True):
-        """Queue a read/unread mark and refresh, applying it with a live client."""
-        _LOGGER.debug(
-            "Queueing mark of %s as %s",
-            information_key,
-            "read" if read else "unread",
-        )
-        self.pending_information_marks.append((information_key, read))
-        await self.async_refresh()
 
     async def async_mark_discussions(self, subject=None, read=True):
         """Queue a read/unread mark and refresh, applying it with a live client."""
@@ -636,15 +503,12 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
         if self.config_entry.options.get(
                 "informations", DEFAULT_INFORMATIONS_ENABLED
         ):
-            information_marks = self.pending_information_marks
-            self.pending_information_marks = []
             self.data["information_and_surveys"] = (
                 await self.hass.async_add_executor_job(
-                    get_information_and_surveys, client, date_from, information_marks
+                    get_information_and_surveys, client, date_from
                 )
             )
         else:
-            self.pending_information_marks = []
             self.data["information_and_surveys"] = None
 
         # Discussions. The messaging tab belongs to the account rather than to a
