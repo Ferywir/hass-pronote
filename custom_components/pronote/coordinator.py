@@ -31,6 +31,7 @@ from .const import (
     DEFAULT_ALARM_OFFSET,
     DEFAULT_DISCUSSIONS_ENABLED,
     DEFAULT_INFORMATION_DAYS,
+    DEFAULT_INFORMATIONS_ENABLED,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -108,12 +109,14 @@ def get_overall_average(period):
 
 
 def mark_resource(client):
-    """The resource a read mark applies to: the selected child, or the account.
+    """The resource a read mark applies to.
 
-    A parent account keeps the parent in ``client.info`` even once a child is
-    selected, so it cannot be used to name the reader of an information.
+    The news page belongs to the account rather than to a child — a parent
+    sees one feed, addressed to them, whichever child is selected — so the
+    reader is the account itself. ``client.info`` holds it: a parent account
+    fills it at login and ``set_child`` leaves it alone.
     """
-    return getattr(client, "_selected_child", None) or client.info
+    return client.info
 
 
 def mark_information_read(client, information, read):
@@ -140,7 +143,12 @@ def mark_information_read(client, information, read):
         ],
         "saisieActualite": False,
     }
-    _LOGGER.debug("SaisieActualites request: %s", payload)
+    _LOGGER.debug(
+        "SaisieActualites request (account %s, selected child %s): %s",
+        client.info.id,
+        getattr(getattr(client, "_selected_child", None), "id", None),
+        payload,
+    )
     response = client.post("SaisieActualites", 8, payload)
     _LOGGER.debug("SaisieActualites answer: %s", response)
     information.read = read
@@ -580,11 +588,21 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
         date_from = datetime.combine(
             today - timedelta(days=information_days), datetime.min.time()
         )
-        information_marks = self.pending_information_marks
-        self.pending_information_marks = []
-        self.data["information_and_surveys"] = await self.hass.async_add_executor_job(
-            get_information_and_surveys, client, date_from, information_marks
-        )
+        # The news page belongs to the account too, so the same option pattern
+        # applies: a parent with several children exposes it once.
+        if self.config_entry.options.get(
+                "informations", DEFAULT_INFORMATIONS_ENABLED
+        ):
+            information_marks = self.pending_information_marks
+            self.pending_information_marks = []
+            self.data["information_and_surveys"] = (
+                await self.hass.async_add_executor_job(
+                    get_information_and_surveys, client, date_from, information_marks
+                )
+            )
+        else:
+            self.pending_information_marks = []
+            self.data["information_and_surveys"] = None
 
         # Discussions. The messaging tab belongs to the account rather than to a
         # child, so every entry of a parent account would report the same

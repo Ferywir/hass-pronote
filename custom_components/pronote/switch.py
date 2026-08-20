@@ -17,7 +17,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import slugify as ha_slugify
 
-from .const import DEFAULT_DISCUSSIONS_ENABLED, DOMAIN
+from .const import (
+    DEFAULT_DISCUSSIONS_ENABLED,
+    DEFAULT_INFORMATIONS_ENABLED,
+    DOMAIN,
+)
 from .coordinator import PronoteDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -86,6 +90,9 @@ async def async_setup_entry(
         discussions_enabled = config_entry.options.get(
             "discussions", DEFAULT_DISCUSSIONS_ENABLED
         )
+        informations_enabled = config_entry.options.get(
+            "informations", DEFAULT_INFORMATIONS_ENABLED
+        )
         discussions = coordinator.data.get("discussions")
         informations = coordinator.data.get("information_and_surveys")
 
@@ -96,11 +103,12 @@ async def async_setup_entry(
                     "discussion",
                     discussion,
                 )
-        for information in informations or []:
-            current[information_unique_id(coordinator, information)] = (
-                "information",
-                information,
-            )
+        if informations_enabled:
+            for information in informations or []:
+                current[information_unique_id(coordinator, information)] = (
+                    "information",
+                    information,
+                )
 
         # A family whose fetch failed is left at None, which must not be read
         # as "everything is gone" either. Disabling discussions, on the other
@@ -108,7 +116,7 @@ async def async_setup_entry(
         removable = []
         if not discussions_enabled or discussions is not None:
             removable.append(DISCUSSION_MARKER)
-        if informations is not None:
+        if not informations_enabled or informations is not None:
             removable.append(INFORMATION_MARKER)
 
         for entry in er.async_entries_for_config_entry(
