@@ -42,5 +42,8 @@ DEFAULT_LUNCH_BREAK_TIME = "13:00"
 # The messaging tab belongs to the account, not to a child: with several
 # children, every entry would otherwise expose the same discussions.
 DEFAULT_DISCUSSIONS_ENABLED = True
+# Informations, like discussions, belong to the account and not to a child:
+# every entry of a parent account reports the same news page.
+DEFAULT_INFORMATIONS_ENABLED = True
 
 PLATFORMS = [Platform.SENSOR, Platform.CALENDAR, Platform.SWITCH]
