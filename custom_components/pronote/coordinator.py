@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import asyncio
 import logging
 from pronotepy.dataClasses import Period as PronotePeriod
 from .pronote_helper import *
@@ -335,6 +336,27 @@ def get_discussions(client, pending_marks=None):
     )
 
 
+_ACCOUNT_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def account_lock(config_data) -> asyncio.Lock:
+    """The lock serialising every refresh of one PRONOTE account.
+
+    Each cycle opens its own session, and a QR-code login rotates its token:
+    the credentials an entry was given are spent the moment another login
+    happens. Two entries of the same parent account — or one entry refreshing
+    while a mark triggers a second cycle — therefore invalidate each other's
+    session mid-flight, and every request left in the losing cycle fails while
+    decrypting. Serialising per account keeps each session alone with its
+    token.
+    """
+    key = "|".join(
+        str(config_data.get(field, ""))
+        for field in ("qr_code_url", "qr_code_username", "username", "url")
+    )
+    return _ACCOUNT_LOCKS.setdefault(key, asyncio.Lock())
+
+
 class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
     """Data update coordinator for the Pronote integration."""
 
@@ -371,6 +393,11 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict[Platform, dict[str, Any]]:
         """Get the latest data from Pronote and updates the state."""
+        async with account_lock(self.config_entry.data):
+            return await self._async_fetch_data()
+
+    async def _async_fetch_data(self) -> dict[Platform, dict[str, Any]]:
+        """Fetch a whole cycle, with the account to ourselves."""
         today = date.today()
         previous_data = None if self.data is None else self.data.copy()
 
