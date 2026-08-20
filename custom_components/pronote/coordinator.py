@@ -147,12 +147,25 @@ def mark_information_read(client, information, read):
 
 
 def apply_information_marks(client, informations, pending_marks):
-    """Mark informations as read/unread. Returns True if anything was marked."""
+    """Mark informations as read/unread. Returns True if anything was marked.
+
+    Marks are keyed the way discussions are, on content rather than on
+    ``Information.id``: the id belongs to the session that returned it, and
+    the mark is applied by the next refresh, which opens another one.
+    """
     marked = False
-    by_id = {information.id: information for information in informations}
-    for information_id, read in pending_marks:
-        information = by_id.get(information_id)
+    by_key = {
+        information_key(information.title, information.creation_date): information
+        for information in informations
+    }
+    for key, read in pending_marks:
+        information = by_key.get(key)
         if information is None:
+            _LOGGER.warning(
+                "Cannot mark %s as %s: no such information in this refresh",
+                key,
+                "read" if read else "unread",
+            )
             continue
         try:
             mark_information_read(client, information, read)
@@ -164,7 +177,7 @@ def apply_information_marks(client, informations, pending_marks):
             _LOGGER.warning(
                 "Error marking information %s (%s) as %s for resource %s, "
                 "skipping the remaining marks: %s: %s",
-                information.id,
+                key,
                 information.title,
                 "read" if read else "unread",
                 mark_resource(client).id,
@@ -319,9 +332,9 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
         self.pending_discussion_marks = []
         self.pending_information_marks = []
 
-    async def async_mark_information(self, information_id, read=True):
+    async def async_mark_information(self, information_key, read=True):
         """Queue a read/unread mark and refresh, applying it with a live client."""
-        self.pending_information_marks.append((information_id, read))
+        self.pending_information_marks.append((information_key, read))
         await self.async_refresh()
 
     async def async_mark_discussions(self, subject=None, read=True):
