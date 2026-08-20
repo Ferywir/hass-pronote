@@ -123,36 +123,52 @@ def mark_resource(client):
 def mark_information_read(client, information, read):
     """Mark an information read or unread in PRONOTE.
 
-    ``Information.mark_as_read`` names the reader with ``client.info.id``,
-    which a parent account fills with the parent's own resource — while the
-    same payload labels it ``G: 4``, a student. PRONOTE answers "la page a
-    expire" and pronotepy reopens a session over it (pronotepy#180, open
-    since 2022). Posting the selected child instead keeps the payload
-    consistent, and falls back to ``client.info`` for student accounts,
-    where the two are the same resource.
+    The request goes straight to the transport rather than through
+    ``client.post``: ``ParentClient.post`` answers any API error by reopening
+    a session, without the ``_refreshing`` guard its base class has. That
+    consumes the rotating QR token, and since the integration only persists a
+    new one after a successful cycle — which the same error prevents — the
+    entry is left holding a spent token and can no longer log in at all. A
+    refused mark must cost nothing but the mark.
+
+    PRONOTE answers "la page a expiré" to the signature pronotepy sends
+    (pronotepy#180). The news page belongs to the account, so it is tried
+    without the child scoping first, then with it.
     """
-    resource = mark_resource(client)
     payload = {
         "listeActualites": [
             {
                 "N": information.id,
                 "validationDirecte": True,
                 "genrePublic": 4,
-                "public": {"N": resource.id, "G": 4},
+                "public": {"N": client.info.id, "G": 4},
                 "lue": read,
             }
         ],
         "saisieActualite": False,
     }
-    _LOGGER.debug(
-        "SaisieActualites request (account %s, selected child %s): %s",
-        client.info.id,
-        getattr(getattr(client, "_selected_child", None), "id", None),
-        payload,
-    )
-    response = client.post("SaisieActualites", 8, payload)
-    _LOGGER.debug("SaisieActualites answer: %s", response)
-    information.read = read
+
+    signatures = [{"onglet": 8}]
+    child = getattr(client, "_selected_child", None)
+    if child is not None:
+        signatures.append({"onglet": 8, "membre": {"N": child.id, "G": 4}})
+
+    last_error = None
+    for signature in signatures:
+        _LOGGER.debug("SaisieActualites request %s: %s", signature, payload)
+        try:
+            response = client.communication.post(
+                "SaisieActualites", {"Signature": signature, "data": payload}
+            )
+        except Exception as ex:
+            _LOGGER.debug("SaisieActualites refused (%s): %s", signature, ex)
+            last_error = ex
+            continue
+        _LOGGER.debug("SaisieActualites answer: %s", response)
+        information.read = read
+        return
+
+    raise last_error
 
 
 def apply_information_marks(client, informations, pending_marks):
