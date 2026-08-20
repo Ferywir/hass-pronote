@@ -36,6 +36,36 @@ import re
 _LOGGER = logging.getLogger(__name__)
 
 
+def disable_auto_relogin(client) -> None:
+    """Stop pronotepy from reopening a session behind our back.
+
+    ``ClientBase.post`` answers a PRONOTE error by logging in again and
+    retrying, and ``ParentClient.post`` does so without even the
+    ``_refreshing`` guard of its base class. Each login rotates the QR token,
+    which the integration only persists at the end of a successful cycle — so
+    one refused request in the middle of a cycle leaves the entry holding a
+    spent token, unable to log in ever again. The user then has to delete the
+    entry and scan a new QR code.
+
+    A cycle already opens its own session, so a re-login inside it buys
+    nothing. Replacing ``post`` with the same request minus the retry makes a
+    refusal cost only that request.
+    """
+    def post(function_name, onglet=None, data=None):
+        post_data = {}
+        if onglet:
+            signature = {"onglet": onglet}
+            child = getattr(client, "_selected_child", None)
+            if child is not None:
+                signature["membre"] = {"N": child.id, "G": 4}
+            post_data["Signature"] = signature
+        if data:
+            post_data["data"] = data
+        return client.communication.post(function_name, post_data)
+
+    client.post = post
+
+
 def get_pronote_client(data) -> pronotepy.Client | pronotepy.ParentClient | None:
     _LOGGER.debug(f"Coordinator uses connection: {data['connection_type']}")
 
@@ -47,6 +77,8 @@ def get_pronote_client(data) -> pronotepy.Client | pronotepy.ParentClient | None
     if client is None:
         _LOGGER.warning("Client creation failed")
         return None
+
+    disable_auto_relogin(client)
 
     try:
         client.session_check()

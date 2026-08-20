@@ -294,10 +294,24 @@ class PronoteInformationSwitch(PronoteReadSwitch):
             "content": information.get("content"),
         }
 
+    async def _refuse(self, read: bool) -> None:
+        """Refuse the toggle and put the switch back where it was.
+
+        PRONOTE rejects SaisieActualites for a parent account — "acces refuse"
+        unscoped, "la page a expire" scoped to a child — and the refusal
+        poisons the session for the rest of the cycle. Nothing is sent:
+        informations are read here, and marked in PRONOTE (pronotepy#180).
+        """
+        _LOGGER.warning(
+            "PRONOTE does not allow marking an information as %s: %s left "
+            "unchanged",
+            "read" if read else "unread",
+            self._key,
+        )
+        self.async_write_ha_state()
+
     async def async_turn_on(self, **kwargs) -> None:
-        """Mark the information as read in PRONOTE."""
-        await self.coordinator.async_mark_information(self._key, read=True)
+        await self._refuse(read=True)
 
     async def async_turn_off(self, **kwargs) -> None:
-        """Mark the information as unread in PRONOTE."""
-        await self.coordinator.async_mark_information(self._key, read=False)
+        await self._refuse(read=False)
