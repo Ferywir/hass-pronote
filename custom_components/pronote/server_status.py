@@ -26,6 +26,17 @@ PROBE_INTERVAL = timedelta(minutes=5)
 # Short timeout: we only need the HTTP status, never the page body.
 PROBE_TIMEOUT = 15
 
+# Some schools put a filter in front of Pronote that answers "400 Bad request"
+# to any client that does not look like a browser, so the probe introduces
+# itself as one. Without this the sensor reports a permanent outage of a server
+# that is perfectly healthy.
+PROBE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    )
+}
+
 # Stable state slugs (the UI shows localized labels via translations).
 STATE_OPERATIONAL = "operational"
 STATE_MAINTENANCE = "maintenance"
@@ -59,17 +70,21 @@ def get_pronote_base_url(config_data) -> str | None:
 def server_status_from_http(status: int | None) -> str:
     """Map an HTTP status (or None for a network failure) to a server state.
 
-    - any response below 400 (200 login page, 3xx redirect to an ENT) -> operational
+    The question this sensor answers is "is the Pronote server answering?", so
+    any status it hands back means the server is alive: a 400 or a 404 says our
+    request was wrong, not that the school's Pronote is down.
+
+    - any response below 500 (login page, redirect to an ENT, 4xx) -> operational
     - 503 "Service Unavailable" (Pronote app pool stopped) -> maintenance
-    - any other 4xx/5xx -> error
+    - any other 5xx -> error
     - no response at all (timeout, DNS, connection refused) -> unreachable
     """
     if status is None:
         return STATE_UNREACHABLE
-    if status < 400:
-        return STATE_OPERATIONAL
     if status == 503:
         return STATE_MAINTENANCE
+    if status < 500:
+        return STATE_OPERATIONAL
     return STATE_ERROR
 
 
@@ -150,6 +165,7 @@ class PronoteServerStatusSensor(SensorEntity):
         try:
             async with session.get(
                 self._base_url,
+                headers=PROBE_HEADERS,
                 timeout=aiohttp.ClientTimeout(total=PROBE_TIMEOUT),
                 allow_redirects=True,
             ) as response:
