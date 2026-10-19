@@ -491,6 +491,25 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
             self.data["homework_period"] = None
             _LOGGER.info("Error getting homework_period from pronote: %s", ex)
 
+        # Discussions. The messaging tab belongs to the account rather than to a
+        # child, so every entry of a parent account would report the same
+        # discussions; the option lets them be exposed by a single entry.
+        #
+        # Fetched before the news page: a PRONOTE refusal poisons the session
+        # for the rest of the cycle, and the news page is the part that asks
+        # for one request per item. Whatever it costs, it costs it last.
+        if self.config_entry.options.get(
+                "discussions", DEFAULT_DISCUSSIONS_ENABLED
+        ):
+            pending_marks = self.pending_discussion_marks
+            self.pending_discussion_marks = []
+            self.data["discussions"] = await self.hass.async_add_executor_job(
+                get_discussions, client, pending_marks
+            )
+        else:
+            self.pending_discussion_marks = []
+            self.data["discussions"] = None
+
         # Information and Surveys
         information_days = self.config_entry.options.get(
             "information_days", DEFAULT_INFORMATION_DAYS
@@ -510,21 +529,6 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
             )
         else:
             self.data["information_and_surveys"] = None
-
-        # Discussions. The messaging tab belongs to the account rather than to a
-        # child, so every entry of a parent account would report the same
-        # discussions; the option lets them be exposed by a single entry.
-        if self.config_entry.options.get(
-                "discussions", DEFAULT_DISCUSSIONS_ENABLED
-        ):
-            pending_marks = self.pending_discussion_marks
-            self.pending_discussion_marks = []
-            self.data["discussions"] = await self.hass.async_add_executor_job(
-                get_discussions, client, pending_marks
-            )
-        else:
-            self.pending_discussion_marks = []
-            self.data["discussions"] = None
         # Discussions are already formatted, hence the identity formatter.
         self.compare_data(
             previous_data,
