@@ -72,6 +72,55 @@ def disable_auto_relogin(client) -> None:
     client.post = post
 
 
+def fetch_information_content_as_selected_child() -> None:
+    """Ask for an information's content as the child whose page we asked for.
+
+    Since pronotepy 2.15, ``Information.content()`` and ``.attachments()`` no
+    longer read the item from the listing: they fetch it, one request each, and
+    name the reader as ``client.info``. For a parent account that is the wrong
+    person. ``client.info`` is built once at login from the parent's resource
+    and ``set_child`` never rebuilds it, while the signature of the very same
+    request names the selected child. PRONOTE answers that mismatch with
+    "20 | La page a expiree (11)", and the refusal poisons the session for
+    every request that follows in the cycle -- discussions included.
+
+    Naming the selected child on both sides makes the request consistent. A
+    student account has no selected child and keeps ``client.info``, which is
+    the student, so it is unaffected.
+    """
+    def _fetch_content(self) -> None:
+        if self._raw_content is not None:
+            return
+
+        client = self._client
+        reader = getattr(client, "_selected_child", None) or client.info
+        response = client.post(
+            "PageActualites",
+            8,
+            {
+                "actualite": {
+                    "N": self.id,
+                    "genrePublic": 4,
+                    "public": {
+                        "N": reader.id,
+                        "G": 4,
+                    },
+                },
+                "genreRequeteActualite": 1,
+                "modeAffActu": 0,
+            },
+        )
+
+        self._raw_content = response["dataSec"]["data"]["detailsActualite"][
+            "listeQuestions"
+        ]["V"]
+
+    pronotepy.dataClasses.Information._fetch_content = _fetch_content
+
+
+fetch_information_content_as_selected_child()
+
+
 def get_pronote_client(data) -> pronotepy.Client | pronotepy.ParentClient | None:
     _LOGGER.debug(f"Coordinator uses connection: {data['connection_type']}")
 
