@@ -41,6 +41,37 @@ import re
 
 _LOGGER = logging.getLogger(__name__)
 
+# Errors meaning Pronote rejected auth and not just server failures :
+# - wrong password
+# - expired token
+# - invalid PIN
+class AuthenticationFailed(Exception):
+    """Pronote did not log us in (wrong password or revoked token)."""
+
+
+AUTH_ERRORS = (
+    pronotepy.exceptions.CryptoError,
+    pronotepy.exceptions.MFAError,
+    AuthenticationFailed,
+)
+
+
+def get_pronote_server_version(client) -> str:
+    """Return the PRONOTE version of the instance, e.g. "2026.2.5.7".
+
+    Read from the ``Server`` header of the last response received, which every
+    PRONOTE response carries. Unlike ``versionPN``, it is available even when
+    the login itself failed, which is when it is the most useful. Returns
+    "unknown" when the header is missing (a reverse proxy may strip it).
+    """
+    try:
+        server = client.communication.last_response.headers.get("Server", "")
+    except AttributeError:
+        return "unknown"
+
+    match = re.search(r"PRONOTE\s+([\d.]+)", server)
+    return match.group(1) if match else "unknown"
+
 
 def disable_auto_relogin(client) -> None:
     """Stop pronotepy from reopening a session behind our back.
@@ -134,6 +165,7 @@ def get_pronote_client(data) -> pronotepy.Client | pronotepy.ParentClient | None
         return None
 
     disable_auto_relogin(client)
+    _LOGGER.debug("Connected to PRONOTE %s", get_pronote_server_version(client))
 
     try:
         client.session_check()
@@ -146,7 +178,7 @@ def get_pronote_client(data) -> pronotepy.Client | pronotepy.ParentClient | None
 def get_client_from_username_password(
     data,
 ) -> pronotepy.Client | pronotepy.ParentClient | None:
-    url = data["url"]
+    url = data["url"].split("?", 1)[0]
     url = re.sub(r"/[^/]+\.html$", "/", url)
     if not url.endswith("/"):
         url += "/"
@@ -173,9 +205,13 @@ def get_client_from_username_password(
             client_identifier=data.get("client_identifier", None),
             ent=ent,
         )
+        if not client.logged_in:
+            raise AuthenticationFailed("username/password rejected")
         del ent
         del client.account_pin
         _LOGGER.info(client.info.name)
+    except AUTH_ERRORS:
+        raise
     except Exception as err:
         _LOGGER.critical(err)
         return None
@@ -222,10 +258,9 @@ def get_client_from_qr_code(data) -> pronotepy.Client | pronotepy.ParentClient |
         qr_code_device_name = data.get("device_name", None)
         qr_code_client_identifier = data.get("client_identifier", None)
 
-    _LOGGER.info(f"Coordinator uses qr_code_username: {qr_code_username}")
-    _LOGGER.info(f"Coordinator uses qr_code_pwd: {qr_code_password}")
+    _LOGGER.info("Coordinator uses qr_code_username: %s", qr_code_username)
 
-    return (
+    client = (
         pronotepy.ParentClient if data["account_type"] == "parent" else pronotepy.Client
     ).token_login(
         pronote_url=qr_code_url,
@@ -236,6 +271,9 @@ def get_client_from_qr_code(data) -> pronotepy.Client | pronotepy.ParentClient |
         device_name=qr_code_device_name,
         client_identifier=qr_code_client_identifier,
     )
+    if not client.logged_in:
+        raise AuthenticationFailed("QR/token login rejected")
+    return client
 
 
 def get_day_start_at(lessons):

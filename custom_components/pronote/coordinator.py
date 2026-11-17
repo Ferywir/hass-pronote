@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
-import asyncio
 import logging
 from pronotepy.dataClasses import Period as PronotePeriod
 from .pronote_helper import *
@@ -18,7 +18,11 @@ from slugify import slugify
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import TimestampDataUpdateCoordinator
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.update_coordinator import (
+    TimestampDataUpdateCoordinator,
+    UpdateFailed,
+)
 
 
 from .const import (
@@ -33,12 +37,34 @@ from .const import (
     DEFAULT_DISCUSSIONS_ENABLED,
     DEFAULT_INFORMATION_DAYS,
     DEFAULT_INFORMATIONS_ENABLED,
+    UPDATE_TIMEOUT,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 
+def get_current_period(client):
+    """Current period, falling back on client.periods for parent accounts."""
+    try:
+        return client.current_period
+    except Exception as ex:
+        _LOGGER.info("Error getting current period from pronote: %s", ex)
+    today = date.today()
+    try:
+        periods = [p for p in client.periods if p.start.date() <= today <= p.end.date()]
+    except Exception as ex:
+        _LOGGER.info("Error getting periods from pronote: %s", ex)
+        return None
+    for period_type in ("trimestre", "semestre"):
+        for period in periods:
+            if period.name.lower().startswith(period_type):
+                return period
+    return periods[0] if periods else None
+
+
 def get_grades(period):
+    if period is None:
+        return None
     try:
         grades = period.grades
         return sorted(grades, key=lambda grade: grade.date, reverse=True)
@@ -48,6 +74,8 @@ def get_grades(period):
 
 
 def get_absences(period):
+    if period is None:
+        return None
     try:
         absences = period.absences
         return sorted(absences, key=lambda absence: absence.from_date, reverse=True)
@@ -57,6 +85,8 @@ def get_absences(period):
 
 
 def get_delays(period):
+    if period is None:
+        return None
     try:
         delays = period.delays
         return sorted(delays, key=lambda delay: delay.date, reverse=True)
@@ -66,6 +96,8 @@ def get_delays(period):
 
 
 def get_averages(period):
+    if period is None:
+        return None
     try:
         averages = period.averages
         return averages
@@ -75,6 +107,8 @@ def get_averages(period):
 
 
 def get_punishments(period):
+    if period is None:
+        return None
     try:
         punishments = period.punishments
         return sorted(
@@ -88,6 +122,8 @@ def get_punishments(period):
 
 
 def get_evaluations(period):
+    if period is None:
+        return None
     try:
         evaluations = period.evaluations
         evaluations = sorted(evaluations, key=lambda evaluation: (evaluation.name))
@@ -100,6 +136,8 @@ def get_evaluations(period):
 
 
 def get_overall_average(period):
+    if period is None:
+        return None
     try:
         return period.overall_average
     except Exception as ex:
@@ -275,6 +313,16 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
         await self.async_refresh()
 
     async def _async_update_data(self) -> dict[Platform, dict[str, Any]]:
+        previous_data = None if self.data is None else self.data.copy()
+        try:
+            async with asyncio.timeout(UPDATE_TIMEOUT):
+                return await self._async_update()
+        except BaseException:
+            # a timed out refresh is cancelled mid-way, keep the last data
+            self.data = previous_data
+            raise
+
+    async def _async_update(self) -> dict[Platform, dict[str, Any]]:
         """Get the latest data from Pronote and updates the state."""
         async with account_lock(self.config_entry.data):
             return await self._async_fetch_data()
@@ -311,29 +359,48 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
             "active_periods": [],
             "next_alarm": None,
             "overall_average": None,
+            "pronote_version": None,
         }
 
-        client = await self.hass.async_add_executor_job(get_pronote_client, config_data)
+        try:
+            client = await self.hass.async_add_executor_job(
+                get_pronote_client, config_data
+            )
+        except AUTH_ERRORS as err:
+            # Stop polling and ask the user for new auth
+            self.data = previous_data
+            raise ConfigEntryAuthFailed(
+                f"Pronote authentication failed: {err}"
+            ) from err
+        except Exception:
+            self.data = previous_data
+            raise
         if client is None:
-            _LOGGER.error("Unable to init pronote client")
-            return None
+            # Keep the last data for compare_data on the next update
+            self.data = previous_data
+            raise UpdateFailed("Unable to init pronote client")
 
         try:
             return await self._fetch_data(client, today, previous_data)
+        except Exception:
+            self.data = previous_data
+            raise
         finally:
+            # A refresh() during the update rotates the token again
             try:
-                if hasattr(client, 'session') and client.session is not None:
-                    await self.hass.async_add_executor_job(client.session.close)
+                await self._save_credentials(client)
+            except Exception as ex:
+                _LOGGER.warning("Error saving pronote credentials: %s", ex)
+            try:
+                await self.hass.async_add_executor_job(client.communication.session.close)
             except Exception:
                 pass
-            # Clear the class-level set that accumulates every Period ever created
-            PronotePeriod.instances.clear()
+            # shared across children: only drop this client's periods (incl. ones replaced by a refresh())
+            PronotePeriod.instances.difference_update(
+                [p for p in list(PronotePeriod.instances) if p._client is client]
+            )
 
-    async def _fetch_data(self, client, today, previous_data):
-        """Fetch all data from Pronote client."""
-        config_data = self.config_entry.data
-
-        # Save possibly refreshed credentials
+    async def _save_credentials(self, client):
         new_creds = await self.hass.async_add_executor_job(client.export_credentials)
         new_data = self.config_entry.data.copy()
         new_data.update({k: v for k, v in new_creds.items() 
@@ -345,7 +412,14 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
             new_data["qr_code_uuid"] = new_creds["uuid"]
         
         self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
-        
+
+    async def _fetch_data(self, client, today, previous_data):
+        """Fetch all data from Pronote client."""
+        config_data = self.config_entry.data
+
+        # Save possibly refreshed credentials
+        await self._save_credentials(client)
+
         child_info = client.info
 
         if config_data["account_type"] == "parent":
@@ -357,6 +431,20 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
 
         self.data["child_info"] = child_info
         self.data["sensor_prefix"] = re.sub("[^A-Za-z]", "_", child_info.name.lower())
+
+        # PRONOTE version of the establishment instance, exposed as a
+        # diagnostic sensor. Read defensively: it is only there to help
+        # troubleshooting, it must never break a refresh.
+        self.data["pronote_version"] = (
+            client.func_options.get("dataSec", {})
+            .get("data", {})
+            .get("General", {})
+            .get("versionPN")
+        )
+
+        current_period = await self.hass.async_add_executor_job(
+            get_current_period, client
+        )
 
         # Lessons
         try:
@@ -455,7 +543,7 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
 
         # Grades
         self.data["grades"] = await self.hass.async_add_executor_job(
-            get_grades, client.current_period
+            get_grades, current_period
         )
         self.compare_data(
             previous_data,
@@ -467,7 +555,7 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
 
         # Averages
         self.data["averages"] = await self.hass.async_add_executor_job(
-            get_averages, client.current_period
+            get_averages, current_period
         )
 
         # Homework (pre-format to avoid accessing _client after strip)
@@ -540,7 +628,7 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
 
         # Absences
         self.data["absences"] = await self.hass.async_add_executor_job(
-            get_absences, client.current_period
+            get_absences, current_period
         )
         self.compare_data(
             previous_data, "absences", ["from", "to"], "new_absence", format_absence
@@ -548,7 +636,7 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
 
         # Delays
         self.data["delays"] = await self.hass.async_add_executor_job(
-            get_delays, client.current_period
+            get_delays, current_period
         )
         self.compare_data(
             previous_data, "delays", ["date", "minutes"], "new_delay", format_delay
@@ -556,7 +644,7 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
 
         # Evaluations
         self.data["evaluations"] = await self.hass.async_add_executor_job(
-            get_evaluations, client.current_period
+            get_evaluations, current_period
         )
         self.compare_data(
             previous_data,
@@ -568,7 +656,7 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
 
         # Punishments
         self.data["punishments"] = await self.hass.async_add_executor_job(
-            get_punishments, client.current_period
+            get_punishments, current_period
         )
 
         # iCal
@@ -590,7 +678,7 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
 
         # Overall average
         self.data["overall_average"] = await self.hass.async_add_executor_job(
-            get_overall_average, client.current_period
+            get_overall_average, current_period
         )
 
         # Periods
@@ -601,7 +689,7 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
         except Exception as ex:
             _LOGGER.info("Error getting periods from pronote: %s", ex)
         try:
-            raw_current_period = client.current_period
+            raw_current_period = current_period
             self.data["current_period_key"] = slugify(
                 raw_current_period.name, separator="_"
             )

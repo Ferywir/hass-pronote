@@ -252,6 +252,11 @@ def information_content(information_and_survey):
 
 
 def format_information_and_survey(information_and_survey) -> dict:
+    try:
+        attachments = format_attachment_list(information_and_survey.attachments())
+    except AttributeError:
+        attachments = []
+
     return {
         "key": information_key(
             information_and_survey.title, information_and_survey.creation_date
@@ -265,7 +270,7 @@ def format_information_and_survey(information_and_survey) -> dict:
         "category": information_and_survey.category,
         "survey": information_and_survey.survey,
         "anonymous_response": information_and_survey.anonymous_response,
-        "attachments": format_attachment_list(information_and_survey.attachments()),
+        "attachments": attachments,
         "template": information_and_survey.template,
         "shared_template": information_and_survey.shared_template,
         "content": information_content(information_and_survey),
