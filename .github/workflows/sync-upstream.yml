@@ -1,0 +1,134 @@
+# Keeps the fork up to date with delphiki/hass-pronote, without a human in the
+# loop as long as nothing conflicts:
+#
+#   1. main is synced with upstream main.
+#   2. When upstream publishes a release that is not in the fork yet, it is
+#      merged into the release branch (the one carrying the fork's own work),
+#      the integration is smoke-tested, and a release "<upstream>-ferywir" is
+#      published for HACS.
+#
+# A conflict, or a failing smoke test, stops the run before anything is
+# pushed: the run fails, GitHub e-mails you, and the merge is left to be done
+# by hand.
+#
+# Run it by hand with "Run workflow" (Actions tab). Setting `check_ref` only
+# smoke-tests that branch, tag or commit: no sync, no release.
+#
+# Note: GITHUB_TOKEN may not push changes to .github/workflows. When upstream
+# touches its workflows, the push is refused; add a SYNC_TOKEN secret (a
+# personal access token with the `repo` and `workflow` scopes) to lift it.
+
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+    inputs:
+      check_ref:
+        description: "Only smoke-test this ref (no sync, no release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: delphiki/hass-pronote
+  RELEASE_BRANCH: feature/informations
+  RELEASE_SUFFIX: ferywir
+
+jobs:
+  check:
+    if: ${{ inputs.check_ref != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.check_ref }}
+          path: target
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Smoke test
+        run: bash .github/scripts/smoke-test.sh target
+
+  sync:
+    if: ${{ github.event_name == 'schedule' || inputs.check_ref == '' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Prepare git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$UPSTREAM.git"
+          git fetch --tags upstream main
+          cp .github/scripts/smoke-test.sh "$RUNNER_TEMP/smoke-test.sh"
+
+      - name: Sync main
+        run: |
+          git checkout main
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "main already contains upstream/main"
+          elif ! git merge --no-edit upstream/main; then
+            echo "::error::Conflict while merging upstream/main into main, merge it by hand."
+            git merge --abort
+            exit 1
+          else
+            git push origin main
+          fi
+
+      - name: Integrate the latest upstream release
+        run: |
+          latest=$(gh release view --repo "$UPSTREAM" --json tagName --jq .tagName)
+          tag="$latest-$RELEASE_SUFFIX"
+          echo "Latest upstream release: $latest"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already released, nothing to do"
+            exit 0
+          fi
+
+          git checkout -B "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH"
+          if ! git merge-base --is-ancestor "$latest" HEAD; then
+            if ! git merge --no-edit -m "Merge upstream $latest into $RELEASE_BRANCH" "$latest"; then
+              echo "::error::Conflict while merging $latest into $RELEASE_BRANCH:"
+              git diff --name-only --diff-filter=U | sed 's/^/::error:: - /'
+              echo "::error::Merge it by hand, then publish $tag (or let this workflow do it on its next run)."
+              git merge --abort
+              exit 1
+            fi
+          fi
+
+          bash "$RUNNER_TEMP/smoke-test.sh"
+
+          git push origin "$RELEASE_BRANCH"
+
+          # Same packaging as release.yml: GitHub does not run other workflows
+          # for a release created with GITHUB_TOKEN, so the zip is built here.
+          manifest=custom_components/pronote/manifest.json
+          jq --arg v "$tag" '.version = $v' "$manifest" > "$RUNNER_TEMP/manifest.json"
+          cp "$RUNNER_TEMP/manifest.json" "$manifest"
+          (cd custom_components/pronote && zip -qr "$RUNNER_TEMP/pronote.zip" ./)
+          git checkout -- "$manifest"
+
+          gh release create "$tag" "$RUNNER_TEMP/pronote.zip" \
+            --target "$RELEASE_BRANCH" \
+            --title "$tag — upstream $latest" \
+            --notes "Automatic merge of upstream [$latest](https://github.com/$UPSTREAM/releases/tag/$latest) into \`$RELEASE_BRANCH\`, which keeps the fork's own features (discussions, informations and surveys, server status). No conflict, smoke test passed."
