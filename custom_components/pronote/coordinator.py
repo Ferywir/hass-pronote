@@ -38,6 +38,7 @@ from .const import (
     DEFAULT_INFORMATION_DAYS,
     DEFAULT_INFORMATIONS_ENABLED,
     UPDATE_TIMEOUT,
+    AUTH_FAILURES_BEFORE_REAUTH,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -306,6 +307,8 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
         )
         self.config_entry = entry
         self.pending_discussion_marks = []
+        # Failed logins in a row, see _async_fetch_data.
+        self.auth_failures = 0
 
     async def async_mark_discussions(self, subject=None, read=True):
         """Queue a read/unread mark and refresh, applying it with a live client."""
@@ -367,10 +370,24 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
                 get_pronote_client, config_data
             )
         except AUTH_ERRORS as err:
-            # Stop polling and ask the user for new auth
             self.data = previous_data
-            raise ConfigEntryAuthFailed(
-                f"Pronote authentication failed: {err}"
+            self.auth_failures += 1
+            # A refused login is not proof that the credentials are spent:
+            # PRONOTE now and then rejects a token it accepts again a cycle
+            # later, and reloading the entry by hand got it through with the
+            # same token. Only a streak of refusals stops polling and asks
+            # the user for new auth. No retry within the cycle though: logins
+            # in quick succession are what gets the IP banned (#198), so the
+            # next attempt waits for the next scheduled refresh.
+            if self.auth_failures >= AUTH_FAILURES_BEFORE_REAUTH:
+                raise ConfigEntryAuthFailed(
+                    f"Pronote authentication failed {self.auth_failures} times "
+                    f"in a row: {err}"
+                ) from err
+            raise UpdateFailed(
+                f"Pronote authentication failed "
+                f"({self.auth_failures}/{AUTH_FAILURES_BEFORE_REAUTH}), "
+                f"retrying on the next refresh: {err}"
             ) from err
         except Exception:
             self.data = previous_data
@@ -379,6 +396,7 @@ class PronoteDataUpdateCoordinator(TimestampDataUpdateCoordinator):
             # Keep the last data for compare_data on the next update
             self.data = previous_data
             raise UpdateFailed("Unable to init pronote client")
+        self.auth_failures = 0
 
         try:
             return await self._fetch_data(client, today, previous_data)

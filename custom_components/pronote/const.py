@@ -39,6 +39,10 @@ DISCUSSIONS_ATTRIBUTE_MAX_BYTES = 12000
 DEFAULT_REFRESH_INTERVAL = 15
 DEFAULT_ALARM_OFFSET = 60
 UPDATE_TIMEOUT = 300
+# Consecutive failed logins before an entry is stopped and asks for new
+# credentials. A single refused login is often a passing PRONOTE hiccup that
+# the next cycle gets through with the very same token.
+AUTH_FAILURES_BEFORE_REAUTH = 3
 DEFAULT_LUNCH_BREAK_TIME = "13:00"
 # The messaging tab belongs to the account, not to a child: with several
 # children, every entry would otherwise expose the same discussions.
