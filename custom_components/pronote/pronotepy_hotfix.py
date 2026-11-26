@@ -167,9 +167,19 @@ def _login(self) -> bool:
     }
     try:
         auth_response = self.post("Authentification", data=auth_json)
-    except PronoteAPIError:
+    except PronoteAPIError as err:
         if challenge_error is not None:
-            raise challenge_error
+            # On a migrated instance the challenge decryption always fails, so
+            # challenge_error only says that the old scheme did not apply: it
+            # is not why the login failed. PRONOTE's own answer is, and it is
+            # what tells a revoked token from a passing server hiccup. Log it
+            # and chain it, or the "bad username/password" hint hides it.
+            _LOGGER.warning(
+                "PRONOTE %s refused the authentication: %s",
+                _server_version(self),
+                err,
+            )
+            raise challenge_error from err
         raise
     if "cle" in auth_response["dataSec"]["data"]:
         self.communication.after_auth(auth_response, e.aes_key)
@@ -215,6 +225,13 @@ def _login(self) -> bool:
         return True
     else:
         if challenge_error is not None:
+            # Same masking as above, without an exception to chain: the
+            # answer holds no key, only PRONOTE's reason for refusing.
+            _LOGGER.warning(
+                "PRONOTE %s answered the authentication without a key: %s",
+                _server_version(self),
+                auth_response["dataSec"]["data"],
+            )
             raise challenge_error
         log.info("login failed")
         return False
